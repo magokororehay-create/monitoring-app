@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>モニタリング記録</title>
+  <style>
+    body { font-family: -apple-system, sans-serif; margin: 0; padding: 16px; background: #f5f5f7; color: #1d1d1f; }
+    h1 { font-size: 20px; }
+    label { display: block; margin: 12px 0 4px; font-weight: 600; }
+    select, input[type=date], input[type=password], textarea { width: 100%; padding: 10px; font-size: 16px; border: 1px solid #ccc; border-radius: 8px; box-sizing: border-box; }
+    textarea { min-height: 80px; }
+    button { width: 100%; padding: 14px; font-size: 16px; border: none; border-radius: 8px; background: #0071e3; color: #fff; margin-top: 16px; }
+    button:disabled { background: #aaa; }
+    .card { background: #fff; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+    .result { border-top: 1px solid #eee; padding: 12px 0; }
+    .result .goal { font-weight: 600; margin-bottom: 6px; }
+    .msg { padding: 10px; border-radius: 8px; margin-top: 12px; }
+    .msg.err { background: #ffe8e8; color: #b00; }
+    .msg.ok { background: #e8ffea; color: #070; }
+    .hidden { display: none; }
+    .spin { text-align: center; padding: 20px; color: #666; }
+    .dash-sum { font-weight: 600; margin-bottom: 8px; }
+    .chip { display: inline-block; padding: 6px 12px; margin: 3px; border-radius: 16px; font-size: 14px; background: #fff1f0; color: #c0392b; border: 1px solid #f0c5c0; }
+    .chip.done { background: #f0f9f1; color: #2e7d32; border-color: #c5e0c8; }
+    button.rec { width: auto; padding: 8px 16px; margin-top: 6px; background: #fff; color: #c0392b; border: 1px solid #c0392b; font-size: 14px; }
+    button.rec.on { background: #c0392b; color: #fff; }
+    .recitem { font-size: 13px; color: #444; margin-top: 4px; }
+    .recitem button { width: auto; padding: 2px 10px; margin: 0 0 0 8px; font-size: 12px; background: #eee; color: #555; }
+    #pinCard { max-width: 360px; margin: 60px auto; }
+  </style>
+</head>
+<body>
+
+  <!-- PIN入力（初回のみ。以降は端末に記憶） -->
+  <div class="card hidden" id="pinCard">
+    <h1>モニタリング記録</h1>
+    <label>暗証番号（PIN）</label>
+    <input type="password" id="pinInput" inputmode="numeric" placeholder="配布された暗証番号を入力">
+    <button id="pinBtn">はじめる</button>
+    <div id="pinMsg"></div>
+  </div>
+
+  <div id="app" class="hidden">
+  <h1>モニタリング記録</h1>
+
+  <div class="card" id="dashCard">
+    <div class="dash-sum" id="dashSummary">読み込み中…</div>
+    <div id="dashList"></div>
+  </div>
+
+  <div class="card" id="inputCard">
+    <label>利用者</label>
+    <select id="patient"></select>
+
+    <label>実施日</label>
+    <input type="date" id="date">
+
+    <label>ファイル（音声・画像・PDF、複数可）</label>
+    <input type="file" id="files" multiple accept="audio/*,image/*,application/pdf">
+
+    <label>その場で録音（任意）</label>
+    <button type="button" id="recBtn" class="rec">🎤 録音開始</button>
+    <span id="recTime" style="margin-left:8px;color:#c0392b;"></span>
+    <div id="recList"></div>
+
+    <label>補足テキスト（任意・文字起こし等）</label>
+    <textarea id="paste" placeholder="訪問時の様子や文字起こしを貼り付け"></textarea>
+
+    <label style="display:flex;align-items:center;gap:8px;font-weight:normal;margin-top:14px;">
+      <input type="checkbox" id="updateGoals" style="width:18px;height:18px;">
+      計画書の目標で短期目標を更新する（要計画書ファイル添付）
+    </label>
+
+    <button id="genBtn">AI生成</button>
+    <div id="inputMsg"></div>
+  </div>
+
+  <div class="spin hidden" id="spinner">生成中…（ファイルが大きいと時間がかかります）</div>
+
+  <div class="card hidden" id="resultCard">
+    <h1 style="font-size:18px;">確認・修正</h1>
+    <div id="results"></div>
+    <button id="saveBtn">記録する</button>
+    <div id="saveMsg"></div>
+  </div>
+  </div><!-- /app -->
+
+<script>
+  var API_URL = 'https://script.google.com/macros/s/AKfycbwhN90735oBKWsf8hsRpcZwDt2WXej7blZ7_rqhq_UK9j3G9WSXj9EzSqdQHnlMR_E/exec';
+  var STATUS = ['達成','継続','一部達成','要検討'];
+  var patients = [];
+
+  function el(id){ return document.getElementById(id); }
+  function show(id){ el(id).classList.remove('hidden'); }
+  function hide(id){ el(id).classList.add('hidden'); }
+  function msg(id, text, cls){ el(id).innerHTML = text ? '<div class="msg '+cls+'">'+text+'</div>' : ''; }
+
+  // ===== API（GASのdoPostへ。Content-Typeはtext/plainでプリフライト回避）=====
+  async function api(action, payload){
+    var body = JSON.stringify({ action: action, pin: localStorage.getItem('monitoring_pin') || '', payload: payload || null });
+    var r = await fetch(API_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: body });
+    var j = await r.json();
+    if(!j.ok) throw new Error(j.error || 'APIエラー');
+    return j.data;
+  }
+
+  // ===== PIN =====
+  function askPin(message){
+    hide('app'); show('pinCard');
+    if(message) msg('pinMsg', message, 'err');
+  }
+  el('pinBtn').onclick = function(){
+    var v = el('pinInput').value.trim();
+    if(!v){ msg('pinMsg','暗証番号を入力してください','err'); return; }
+    localStorage.setItem('monitoring_pin', v);
+    msg('pinMsg','',''); hide('pinCard'); show('app');
+    init();
+  };
+
+  function init(){
+    var t = new Date();
+    el('date').value = t.toISOString().slice(0,10);
+    el('dashSummary').textContent = '読み込み中…';
+    api('init').then(function(data){
+      patients = data.patients;
+      var sel = el('patient');
+      sel.innerHTML = patients.map(function(p,i){ return '<option value="'+i+'">'+p.name+'</option>'; }).join('');
+      renderDashboard(data.month, data.dashboard);
+    }).catch(function(e){
+      if(String(e.message).indexOf('PIN') !== -1){ askPin(e.message); }
+      else msg('inputMsg', '読み込みに失敗: '+e.message, 'err');
+    });
+  }
+
+  // 当月の実施状況。未実施チップをタップするとその利用者を選択する。
+  function renderDashboard(month, dash){
+    var m = month.split('-')[1].replace(/^0/,'');
+    el('dashSummary').textContent = m+'月のモニタリング：済 '+dash.done.length+'名 ／ 未 '+dash.notDone.length+'名';
+    var html = '';
+    dash.notDone.forEach(function(n){ html += '<span class="chip" data-name="'+n+'">未 '+n+'</span>'; });
+    dash.done.forEach(function(d){ html += '<span class="chip done">済 '+d.name+'（'+d.lastDate.slice(5).replace('-','/')+'）</span>'; });
+    el('dashList').innerHTML = html || '利用者が登録されていません';
+    el('dashList').querySelectorAll('.chip[data-name]').forEach(function(c){
+      c.onclick = function(){
+        var i = patients.findIndex(function(p){ return p.name === c.dataset.name; });
+        if(i >= 0){ el('patient').value = i; el('inputCard').scrollIntoView({behavior:'smooth'}); }
+      };
+    });
+  }
+
+  // ===== その場で録音（MediaRecorder。外部ホスティングなのでiframe制約なし）=====
+  var recorder = null, recChunks = [], recTimer = null, recSec = 0;
+  var recordings = [];  // {name, mimeType, base64}
+
+  el('recBtn').onclick = async function(){
+    if(recorder && recorder.state === 'recording'){ recorder.stop(); return; }
+    try {
+      var stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      var mime = MediaRecorder.isTypeSupported('audio/mp4') ? 'audio/mp4'
+               : MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : '';
+      recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+      recChunks = [];
+      recorder.ondataavailable = function(ev){ if(ev.data.size > 0) recChunks.push(ev.data); };
+      recorder.onstop = function(){
+        stream.getTracks().forEach(function(t){ t.stop(); });
+        clearInterval(recTimer); el('recTime').textContent = '';
+        el('recBtn').classList.remove('on'); el('recBtn').textContent = '🎤 録音開始';
+        var blob = new Blob(recChunks, { type: recorder.mimeType || 'audio/webm' });
+        var r = new FileReader();
+        r.onload = function(){
+          var ext = (blob.type.indexOf('mp4') !== -1) ? 'm4a' : 'webm';
+          recordings.push({ name: '録音'+(recordings.length+1)+'.'+ext, mimeType: blob.type, base64: r.result.split(',')[1] });
+          renderRecList();
+        };
+        r.readAsDataURL(blob);
+      };
+      recorder.start();
+      recSec = 0; el('recTime').textContent = '● 0:00';
+      recTimer = setInterval(function(){
+        recSec++; el('recTime').textContent = '● ' + Math.floor(recSec/60) + ':' + ('0'+recSec%60).slice(-2);
+      }, 1000);
+      el('recBtn').classList.add('on'); el('recBtn').textContent = '⏹ 録音停止';
+    } catch(e){
+      msg('inputMsg', 'この端末では録音できません（'+e.name+'）。ボイスメモ等で録音し「ファイル」から添付してください。', 'err');
+    }
+  };
+
+  function renderRecList(){
+    el('recList').innerHTML = recordings.map(function(r,i){
+      return '<div class="recitem">🎙 '+r.name+'<button type="button" data-i="'+i+'">削除</button></div>';
+    }).join('');
+    el('recList').querySelectorAll('button').forEach(function(b){
+      b.onclick = function(){ recordings.splice(Number(b.dataset.i),1); renderRecList(); };
+    });
+  }
+
+  // File -> base64
+  function toBase64(file){
+    return new Promise(function(resolve, reject){
+      var r = new FileReader();
+      r.onload = function(){ resolve(r.result.split(',')[1]); };
+      r.onerror = reject;
+      r.readAsDataURL(file);
+    });
+  }
+
+  function kindOf(mime){
+    if(mime.indexOf('audio')===0) return '音声';
+    if(mime.indexOf('image')===0) return '画像';
+    if(mime.indexOf('pdf')!==-1) return 'PDF';
+    return 'その他';
+  }
+
+  el('genBtn').onclick = async function(){
+    msg('inputMsg','','');
+    var p = patients[el('patient').value];
+    if(!p){ msg('inputMsg','利用者を選択してください','err'); return; }
+    if(recorder && recorder.state === 'recording'){ msg('inputMsg','録音を停止してから生成してください','err'); return; }
+    var fileEls = el('files').files;
+    var pasteText = el('paste').value;
+    var updateGoals = el('updateGoals').checked;
+    if(fileEls.length===0 && recordings.length===0 && pasteText.trim()===''){ msg('inputMsg','ファイル・録音・テキストのいずれかを入力してください','err'); return; }
+    if(updateGoals && fileEls.length===0){ msg('inputMsg','目標を更新するには計画書ファイルを添付してください','err'); return; }
+
+    el('genBtn').disabled = true; show('spinner'); hide('resultCard');
+    try {
+      var files = recordings.slice();
+      for(var i=0;i<fileEls.length;i++){
+        var b64 = await toBase64(fileEls[i]);
+        files.push({ name: fileEls[i].name, mimeType: fileEls[i].type || 'application/octet-stream', base64: b64 });
+      }
+      window._kinds = files.map(function(f){ return kindOf(f.mimeType); });
+      if(pasteText.trim()!=='') window._kinds.push('テキスト');
+      window._rawText = '';
+      window._updateGoals = updateGoals;
+      var out = await api('process', { patientName: p.name, goals: updateGoals ? [] : p.goals, files: files, pasteText: pasteText });
+      onGenerated(out);
+    } catch(e){
+      hide('spinner'); el('genBtn').disabled=false; msg('inputMsg','生成失敗: '+e.message,'err');
+    }
+  };
+
+  function onGenerated(out){
+    hide('spinner'); el('genBtn').disabled=false;
+    window._rawText = out.rawText || '';
+    var html = out.results.map(function(r, idx){
+      var opts = STATUS.map(function(s){ return '<option'+(s===r.status?' selected':'')+'>'+s+'</option>'; }).join('');
+      return '<div class="result">'
+        + '<div class="goal">'+(idx+1)+'. '+r.goal+'</div>'
+        + '<label>達成状況</label><select data-i="'+idx+'" class="st">'+opts+'</select>'
+        + '<label>コメント</label><textarea data-i="'+idx+'" class="cm">'+(r.comment||'')+'</textarea>'
+        + '</div>';
+    }).join('');
+    el('results').innerHTML = html;
+    el('results').dataset.goals = JSON.stringify(out.results.map(function(r){ return r.goal; }));
+    show('resultCard');
+    el('resultCard').scrollIntoView({ behavior:'smooth' });
+  }
+
+  el('saveBtn').onclick = async function(){
+    msg('saveMsg','','');
+    var goals = JSON.parse(el('results').dataset.goals);
+    var sts = document.querySelectorAll('.st');
+    var cms = document.querySelectorAll('.cm');
+    var results = goals.map(function(g,i){ return { goal: g, status: sts[i].value, comment: cms[i].value }; });
+    var p = patients[el('patient').value];
+    el('saveBtn').disabled = true;
+    try {
+      var res = await api('save', { dateStr: el('date').value, patientName: p.name, results: results, rawText: window._rawText, kinds: window._kinds || [], updateGoals: !!window._updateGoals });
+      el('saveBtn').disabled = false;
+      msg('saveMsg', res.count+'件を記録しました', 'ok');
+      init();  // ダッシュボードを更新
+    } catch(e){
+      el('saveBtn').disabled = false;
+      msg('saveMsg','記録失敗: '+e.message,'err');
+    }
+  };
+
+  // 起動：PINが保存済みならアプリへ、なければPIN画面へ
+  if(localStorage.getItem('monitoring_pin')){ show('app'); init(); }
+  else askPin('');
+</script>
+</body>
+</html>
