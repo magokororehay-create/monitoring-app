@@ -82,6 +82,8 @@
   <div class="card hidden" id="resultCard">
     <h1 style="font-size:18px;">確認・修正</h1>
     <div id="results"></div>
+    <label style="margin-top:8px;">総合所見・今後の方針</label>
+    <textarea id="overall" style="min-height:110px;"></textarea>
     <button id="saveBtn">記録する</button>
     <div id="saveMsg"></div>
   </div>
@@ -255,6 +257,7 @@
     }).join('');
     el('results').innerHTML = html;
     el('results').dataset.goals = JSON.stringify(out.results.map(function(r){ return r.goal; }));
+    el('overall').value = out.overall || '';
     show('resultCard');
     el('resultCard').scrollIntoView({ behavior:'smooth' });
   }
@@ -268,7 +271,7 @@
     var p = patients[el('patient').value];
     el('saveBtn').disabled = true;
     try {
-      var res = await api('save', { dateStr: el('date').value, patientName: p.name, results: results, rawText: window._rawText, kinds: window._kinds || [], updateGoals: !!window._updateGoals });
+      var res = await api('save', { dateStr: el('date').value, patientName: p.name, results: results, overall: el('overall').value, rawText: window._rawText, kinds: window._kinds || [], updateGoals: !!window._updateGoals });
       el('saveBtn').disabled = false;
       msg('saveMsg', res.count+'件を記録しました', 'ok');
       init();  // ダッシュボードを更新
