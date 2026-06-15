@@ -43,7 +43,7 @@
   </div>
 
   <div id="app" class="hidden">
-  <h1>モニタリング記録</h1>
+  <h1>モニタリング記録 <a href="#" id="logoutBtn" style="float:right;font-size:13px;font-weight:normal;color:#0071e3;text-decoration:none;margin-top:6px;">別のPINで入りなおす</a></h1>
 
   <div class="card" id="dashCard">
     <div class="dash-sum" id="dashSummary">読み込み中…</div>
@@ -120,6 +120,16 @@
     localStorage.setItem('monitoring_pin', v);
     msg('pinMsg','',''); hide('pinCard'); show('app');
     init();
+  };
+
+  // 別のPINで入りなおす（記憶したPINを消してPIN画面へ）
+  el('logoutBtn').onclick = function(e){
+    e.preventDefault();
+    localStorage.removeItem('monitoring_pin');
+    el('pinInput').value = '';
+    if(typeof resetForm === 'function') resetForm();
+    hide('app');
+    askPin('');
   };
 
   function init(){
