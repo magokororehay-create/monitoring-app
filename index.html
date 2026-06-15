@@ -130,7 +130,7 @@
       patients = data.patients;
       var sel = el('patient');
       sel.innerHTML = patients.map(function(p,i){ return '<option value="'+i+'">'+p.name+'</option>'; }).join('');
-      renderDashboard(data.month, data.dashboard);
+      renderDashboard(data.month, data.dashboard, data.manager);
     }).catch(function(e){
       if(String(e.message).indexOf('PIN') !== -1){ askPin(e.message); }
       else msg('inputMsg', '読み込みに失敗: '+e.message, 'err');
@@ -138,9 +138,10 @@
   }
 
   // 当月の実施状況。未実施チップをタップするとその利用者を選択する。
-  function renderDashboard(month, dash){
+  function renderDashboard(month, dash, manager){
     var m = month.split('-')[1].replace(/^0/,'');
-    el('dashSummary').textContent = m+'月のモニタリング：済 '+dash.done.length+'名 ／ 未 '+dash.notDone.length+'名';
+    var who = manager ? ('担当：'+manager+'さん　') : '（全員表示・管理者）　';
+    el('dashSummary').textContent = who + m+'月のモニタリング：済 '+dash.done.length+'名 ／ 未 '+dash.notDone.length+'名';
     var html = '';
     dash.notDone.forEach(function(n){ html += '<span class="chip" data-name="'+n+'">未 '+n+'</span>'; });
     dash.done.forEach(function(d){ html += '<span class="chip done">済 '+d.name+'（'+d.lastDate.slice(5).replace('-','/')+'）</span>'; });
