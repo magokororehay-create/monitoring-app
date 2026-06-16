@@ -139,7 +139,7 @@
     api('init').then(function(data){
       patients = data.patients;
       var sel = el('patient');
-      sel.innerHTML = patients.map(function(p,i){ return '<option value="'+i+'">'+p.name+'</option>'; }).join('');
+      sel.innerHTML = patients.map(function(p,i){ return '<option value="'+i+'">'+p.name+(p.manager?'（'+p.manager+'）':'')+'</option>'; }).join('');
       renderDashboard(data.month, data.dashboard, data.manager);
     }).catch(function(e){
       if(String(e.message).indexOf('PIN') !== -1){ askPin(e.message); }
@@ -249,7 +249,7 @@
       if(pasteText.trim()!=='') window._kinds.push('テキスト');
       window._rawText = '';
       window._updateGoals = updateGoals;
-      var out = await api('process', { patientName: p.name, goals: updateGoals ? [] : p.goals, files: files, pasteText: pasteText });
+      var out = await api('process', { patientName: p.name, goals: updateGoals ? [] : p.goals, files: files, pasteText: pasteText, ssId: p.ssId || '' });
       onGenerated(out);
     } catch(e){
       hide('spinner'); el('genBtn').disabled=false; msg('inputMsg','生成失敗: '+e.message,'err');
@@ -283,7 +283,7 @@
     var p = patients[el('patient').value];
     el('saveBtn').disabled = true;
     try {
-      var res = await api('save', { dateStr: el('date').value, patientName: p.name, results: results, overall: el('overall').value, rawText: window._rawText, kinds: window._kinds || [], updateGoals: !!window._updateGoals });
+      var res = await api('save', { dateStr: el('date').value, patientName: p.name, results: results, overall: el('overall').value, rawText: window._rawText, kinds: window._kinds || [], updateGoals: !!window._updateGoals, ssId: p.ssId || '' });
       var note = res.count+'件を記録しました。';
       if(res.docUrl){ note += '報告書を作成しました（<a href="'+res.docUrl+'" target="_blank">開く</a>）。'; }
       else if(res.docError){ note += '※報告書の作成に失敗：'+res.docError; }
