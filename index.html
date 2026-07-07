@@ -22,6 +22,9 @@
     .hidden { display: none; }
     .spin { text-align: center; padding: 20px; color: #666; }
     .dash-sum { font-weight: 600; margin-bottom: 8px; }
+    .warn { background: #fff3cd; color: #7a5c00; border: 1px solid #ffe08a; padding: 10px; border-radius: 8px; margin-bottom: 10px; }
+    .warn button { width: auto; padding: 6px 12px; margin-top: 8px; font-size: 13px; background: #e0a800; }
+    #monthSel { width: auto; padding: 6px 10px; font-size: 14px; border: 1px solid #ccc; border-radius: 8px; margin-bottom: 8px; }
     .chip { display: inline-block; padding: 6px 12px; margin: 3px; border-radius: 16px; font-size: 14px; background: #fff1f0; color: #c0392b; border: 1px solid #f0c5c0; }
     .chip.done { background: #f0f9f1; color: #2e7d32; border-color: #c5e0c8; }
     button.rec { width: auto; padding: 8px 16px; margin-top: 6px; background: #fff; color: #c0392b; border: 1px solid #c0392b; font-size: 14px; }
@@ -46,6 +49,8 @@
   <h1>モニタリング記録 <a href="#" id="logoutBtn" style="float:right;font-size:13px;font-weight:normal;color:#0071e3;text-decoration:none;margin-top:6px;">別のPINで入りなおす</a></h1>
 
   <div class="card" id="dashCard">
+    <div id="prevWarn" class="warn hidden"></div>
+    <select id="monthSel"></select>
     <div class="dash-sum" id="dashSummary">読み込み中…</div>
     <div id="dashList"></div>
   </div>
@@ -132,20 +137,47 @@
     askPin('');
   };
 
+  // 今月からoffsetヶ月の 'YYYY-MM' を返す（日付繰り上がりを避けて1日基準で計算）
+  function ymOf(offset){ var n=new Date(); var d=new Date(n.getFullYear(), n.getMonth()+offset, 1); return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2); }
+  function monthLabel(offset){ var lbl=offset===0?'今月':offset===-1?'先月':'先々月'; var mm=Number(ymOf(offset).split('-')[1]); return lbl+'（'+mm+'月）'; }
+  var curMonth = '';
+
   function init(){
     var t = new Date();
     el('date').value = t.toISOString().slice(0,10);
     el('dashSummary').textContent = '読み込み中…';
+    // 月プルダウン（今月/先月/先々月）
+    el('monthSel').innerHTML = [0,-1,-2].map(function(o){ return '<option value="'+ymOf(o)+'">'+monthLabel(o)+'</option>'; }).join('');
     api('init').then(function(data){
       patients = data.patients;
       var sel = el('patient');
       sel.innerHTML = patients.map(function(p,i){ return '<option value="'+i+'">'+p.name+(p.manager?'（'+p.manager+'）':'')+'</option>'; }).join('');
+      curMonth = data.month;
+      el('monthSel').value = data.month;
       renderDashboard(data.month, data.dashboard, data.manager);
+      // 月初（1〜7日）は前月の未完了を警告表示
+      var pn = data.prevNotDone || [];
+      if(new Date().getDate() <= 7 && pn.length > 0){
+        var pm = Number((data.prevMonth||'').split('-')[1]);
+        el('prevWarn').innerHTML = '⚠️ '+pm+'月のモニタリングが未完了：<b>'+pn.length+'名</b>（'+pn.slice(0,5).join('、')+(pn.length>5?' ほか':'')+'）'
+          + '<br><button id="seePrev">'+pm+'月の未完了を見る</button>';
+        show('prevWarn');
+        el('seePrev').onclick = function(){ el('monthSel').value = data.prevMonth; loadMonth(data.prevMonth); };
+      } else { hide('prevWarn'); }
     }).catch(function(e){
       if(String(e.message).indexOf('PIN') !== -1){ askPin(e.message); }
       else msg('inputMsg', '読み込みに失敗: '+e.message, 'err');
     });
   }
+
+  // 月を切り替えてダッシュボードを再取得
+  function loadMonth(ym){
+    el('dashSummary').textContent = '読み込み中…';
+    api('dashboard', { month: ym }).then(function(d){
+      renderDashboard(d.month, d.dashboard, d.manager);
+    }).catch(function(e){ msg('inputMsg', '取得に失敗: '+e.message, 'err'); });
+  }
+  el('monthSel').onchange = function(){ loadMonth(el('monthSel').value); };
 
   // 当月の実施状況。未実施チップをタップするとその利用者を選択する。
   function renderDashboard(month, dash, manager){
@@ -159,7 +191,12 @@
     el('dashList').querySelectorAll('.chip[data-name]').forEach(function(c){
       c.onclick = function(){
         var i = patients.findIndex(function(p){ return p.name === c.dataset.name; });
-        if(i >= 0){ el('patient').value = i; el('inputCard').scrollIntoView({behavior:'smooth'}); }
+        if(i >= 0){
+          el('patient').value = i;
+          // 過去の月を見ているときは、実施日をその月にしておく（その月の記録として残すため）
+          if(curMonth && month !== curMonth){ el('date').value = month + '-01'; }
+          el('inputCard').scrollIntoView({behavior:'smooth'});
+        }
       };
     });
   }
