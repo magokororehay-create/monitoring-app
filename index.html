@@ -109,12 +109,56 @@
   function msg(id, text, cls){ el(id).innerHTML = text ? '<div class="msg '+cls+'">'+text+'</div>' : ''; }
 
   // ===== API（GASのdoPostへ。Content-Typeはtext/plainでプリフライト回避）=====
-  async function api(action, payload){
+  // Google 側の結果配信（script.googleusercontent.com）が断続的に「ファイルを開くことができません」の
+  // HTML(404) を 10〜50秒後に返す障害がある（スクリプト自体は完了している）。JSON でない応答と
+  // タイムアウトは「一時障害」として自動で再試行する。process/save には requestId を付け、
+  // GAS 側が同じ requestId の再実行を前回結果で返す（記録・報告書の二重作成を防ぐ）。
+  // @@api-logic-start
+  var API_MAX_ATTEMPTS = 5;
+  var API_TIMEOUT_MS = { init: 60000, dashboard: 60000, save: 90000, process: 300000 };
+  function retryDelayMs(attempt){ return 1000 * Math.pow(2, attempt - 1); }
+  function classifyApiText(text){
+    var t = String(text == null ? '' : text).trim();
+    if(t.charAt(0) !== '{'){
+      return { kind: 'transient', message: 'Google側の一時的なエラーで応答を受け取れませんでした' };
+    }
+    var j;
+    try { j = JSON.parse(t); }
+    catch(e){ return { kind: 'transient', message: '応答を読み取れませんでした' }; }
+    if(!j.ok) return { kind: 'error', message: j.error || 'APIエラー' };
+    return { kind: 'ok', data: j.data };
+  }
+  // @@api-logic-end
+  function newRequestId(){
+    if(window.crypto && crypto.randomUUID) return crypto.randomUUID();
+    return 'r' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 12);
+  }
+  function sleep(ms){ return new Promise(function(res){ setTimeout(res, ms); }); }
+  // onRetry(attempt, maxAttempts, reason) は再試行前に呼ばれる（画面に進捗を出す用）。
+  async function api(action, payload, onRetry){
     var body = JSON.stringify({ action: action, pin: localStorage.getItem('monitoring_pin') || '', payload: payload || null });
-    var r = await fetch(API_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: body });
-    var j = await r.json();
-    if(!j.ok) throw new Error(j.error || 'APIエラー');
-    return j.data;
+    var timeoutMs = API_TIMEOUT_MS[action] || 60000;
+    var lastMsg = '';
+    for(var attempt = 1; attempt <= API_MAX_ATTEMPTS; attempt++){
+      var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+      var timer = ctrl ? setTimeout(function(){ ctrl.abort(); }, timeoutMs) : null;
+      var text = null, failMsg = '';
+      try {
+        var r = await fetch(API_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: body, signal: ctrl ? ctrl.signal : undefined });
+        text = await r.text();
+      } catch(e){
+        failMsg = (e && e.name === 'AbortError') ? '応答がありません（'+Math.round(timeoutMs/1000)+'秒）' : '通信エラー（'+(e && e.message || e)+'）';
+      } finally { if(timer) clearTimeout(timer); }
+      var c = text === null ? { kind: 'transient', message: failMsg } : classifyApiText(text);
+      if(c.kind === 'ok') return c.data;
+      if(c.kind === 'error') throw new Error(c.message);
+      lastMsg = c.message;
+      if(attempt < API_MAX_ATTEMPTS){
+        if(onRetry) onRetry(attempt, API_MAX_ATTEMPTS, lastMsg);
+        await sleep(retryDelayMs(attempt));
+      }
+    }
+    throw new Error(lastMsg + '（'+API_MAX_ATTEMPTS+'回試しました）。少し待ってからもう一度お試しください。');
   }
 
   // ===== PIN =====
@@ -152,7 +196,7 @@
     el('dashSummary').textContent = '読み込み中…';
     // 月プルダウン（今月/先月/先々月）
     el('monthSel').innerHTML = [0,-1,-2].map(function(o){ return '<option value="'+ymOf(o)+'">'+monthLabel(o)+'</option>'; }).join('');
-    api('init').then(function(data){
+    api('init', null, function(n, max){ el('dashSummary').textContent = '読み込み中…（Google側の応答待ち・再試行 '+n+'/'+(max-1)+'）'; }).then(function(data){
       patients = data.patients;
       var sel = el('patient');
       sel.innerHTML = patients.map(function(p,i){ return '<option value="'+i+'">'+p.name+(p.manager?'（'+p.manager+'）':'')+'</option>'; }).join('');
@@ -177,7 +221,7 @@
   // 月を切り替えてダッシュボードを再取得
   function loadMonth(ym){
     el('dashSummary').textContent = '読み込み中…';
-    api('dashboard', { month: ym }).then(function(d){
+    api('dashboard', { month: ym }, function(n, max){ el('dashSummary').textContent = '読み込み中…（Google側の応答待ち・再試行 '+n+'/'+(max-1)+'）'; }).then(function(d){
       renderDashboard(d.month, d.dashboard, d.manager);
     }).catch(function(e){ msg('inputMsg', '取得に失敗: '+e.message, 'err'); });
   }
@@ -290,7 +334,9 @@
       if(pasteText.trim()!=='') window._kinds.push('テキスト');
       window._rawText = '';
       window._updateGoals = updateGoals;
-      var out = await api('process', { patientName: p.name, goals: updateGoals ? [] : p.goals, files: files, pasteText: pasteText, ssId: p.ssId || '' });
+      var out = await api('process', { requestId: newRequestId(), patientName: p.name, goals: updateGoals ? [] : p.goals, files: files, pasteText: pasteText, ssId: p.ssId || '' },
+        function(n, max, why){ msg('inputMsg', why+'。自動で再試行しています（'+n+'/'+(max-1)+'）…', 'err'); });
+      msg('inputMsg','','');
       onGenerated(out);
     } catch(e){
       hide('spinner'); el('genBtn').disabled=false; msg('inputMsg','生成失敗: '+e.message,'err');
@@ -299,6 +345,7 @@
 
   function onGenerated(out){
     hide('spinner'); el('genBtn').disabled=false;
+    window._saveRequestId = '';
     window._rawText = out.rawText || '';
     var html = out.results.map(function(r, idx){
       var opts = STATUS.map(function(s){ return '<option'+(s===r.status?' selected':'')+'>'+s+'</option>'; }).join('');
@@ -324,11 +371,14 @@
     var p = patients[el('patient').value];
     el('saveBtn').disabled = true;
     try {
-      var res = await api('save', { dateStr: el('date').value, createdDate: el('created').value, patientName: p.name, results: results, overall: el('overall').value, rawText: window._rawText, kinds: window._kinds || [], updateGoals: !!window._updateGoals, ssId: p.ssId || '' });
+      if(!window._saveRequestId) window._saveRequestId = newRequestId();
+      var res = await api('save', { requestId: window._saveRequestId, dateStr: el('date').value, createdDate: el('created').value, patientName: p.name, results: results, overall: el('overall').value, rawText: window._rawText, kinds: window._kinds || [], updateGoals: !!window._updateGoals, ssId: p.ssId || '' },
+        function(n, max, why){ msg('saveMsg', why+'。自動で再試行しています（'+n+'/'+(max-1)+'）…', 'err'); });
       var note = res.count+'件を記録しました。';
       if(res.docUrl){ note += '報告書を作成しました（<a href="'+res.docUrl+'" target="_blank">開く</a>）。'; }
       else if(res.docError){ note += '※報告書の作成に失敗：'+res.docError; }
       msg('saveMsg', note, 'ok');
+      window._saveRequestId = '';
       hide('saveBtn'); show('nextBtn');
       init();  // ダッシュボードを更新
     } catch(e){
@@ -348,7 +398,7 @@
     el('updateGoals').checked = false;
     el('date').value = new Date().toISOString().slice(0,10);
     el('created').value = new Date().toISOString().slice(0,10);
-    window._kinds = []; window._rawText = ''; window._updateGoals = false;
+    window._kinds = []; window._rawText = ''; window._updateGoals = false; window._saveRequestId = '';
     msg('inputMsg','',''); msg('saveMsg','','');
     hide('resultCard'); hide('nextBtn');
     show('saveBtn'); el('saveBtn').disabled = false;
