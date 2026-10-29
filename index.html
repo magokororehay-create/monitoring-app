@@ -36,7 +36,7 @@
 </head>
 <body>
 
-  <!-- PIN入力（初回のみ。以降は端末に記憶） -->
+  <!-- PIN入力（初回のみ。以降は端末に記憶。最後の利用から30日で再入力） -->
   <div class="card hidden" id="pinCard">
     <h1>モニタリング記録</h1>
     <label>暗証番号（PIN）</label>
@@ -162,6 +162,23 @@
   }
 
   // ===== PIN =====
+  // ログイン有効期限：最後に開いた日から30日。期限内に1回でも開けば、そこからまた30日に延長。
+  var LOGIN_VALID_DAYS = 30;
+  var PIN_EXP_KEY = 'monitoring_pin_exp';
+  function touchLogin(){
+    try { localStorage.setItem(PIN_EXP_KEY, String(Date.now() + LOGIN_VALID_DAYS*24*60*60*1000)); } catch(e){}
+  }
+  function clearLogin(){
+    try { localStorage.removeItem('monitoring_pin'); localStorage.removeItem(PIN_EXP_KEY); } catch(e){}
+  }
+  // 'valid'（期限内）/'expired'（期限切れ）/'none'（未ログイン）
+  function loginState(){
+    var pin, exp;
+    try { pin = localStorage.getItem('monitoring_pin'); exp = localStorage.getItem(PIN_EXP_KEY); } catch(e){ return 'none'; }
+    if(!pin) return 'none';
+    if(!exp) return 'valid'; // 旧バージョンで記憶済みの人は有効扱い（この起動で期限を付与）
+    return Date.now() < Number(exp) ? 'valid' : 'expired';
+  }
   function askPin(message){
     hide('app'); show('pinCard');
     if(message) msg('pinMsg', message, 'err');
@@ -170,6 +187,7 @@
     var v = el('pinInput').value.trim();
     if(!v){ msg('pinMsg','暗証番号を入力してください','err'); return; }
     localStorage.setItem('monitoring_pin', v);
+    touchLogin();
     msg('pinMsg','',''); hide('pinCard'); show('app');
     init();
   };
@@ -177,7 +195,7 @@
   // 別のPINで入りなおす（記憶したPINを消してPIN画面へ）
   el('logoutBtn').onclick = function(e){
     e.preventDefault();
-    localStorage.removeItem('monitoring_pin');
+    clearLogin();
     el('pinInput').value = '';
     if(typeof resetForm === 'function') resetForm();
     hide('app');
@@ -213,7 +231,7 @@
         el('seePrev').onclick = function(){ el('monthSel').value = data.prevMonth; loadMonth(data.prevMonth); };
       } else { hide('prevWarn'); }
     }).catch(function(e){
-      if(String(e.message).indexOf('PIN') !== -1){ askPin(e.message); }
+      if(String(e.message).indexOf('PIN') !== -1){ clearLogin(); askPin(e.message); }
       else msg('inputMsg', '読み込みに失敗: '+e.message, 'err');
     });
   }
@@ -407,8 +425,10 @@
   }
   el('nextBtn').onclick = resetForm;
 
-  // 起動：PINが保存済みならアプリへ、なければPIN画面へ
-  if(localStorage.getItem('monitoring_pin')){ show('app'); init(); }
+  // 起動：期限内ならアプリへ（開いた時点で期限を30日延長）、期限切れ・未ログインならPIN画面へ
+  var st = loginState();
+  if(st === 'valid'){ touchLogin(); show('app'); init(); }
+  else if(st === 'expired'){ clearLogin(); askPin('前回のご利用から'+LOGIN_VALID_DAYS+'日が過ぎたため、暗証番号をもう一度入力してください'); }
   else askPin('');
 </script>
 </body>
